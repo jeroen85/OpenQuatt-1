@@ -1,3 +1,4 @@
+import { invalidateWeatherForecast, refreshWeatherForecast, shouldRefreshWeatherForecast } from "../features/weather-forecast.js";
 import { syncPerformanceTelemetryPrompt } from "../features/performance-telemetry-prompt.js";
 import { FREQUENCY_MINIMUM_KEYS, HP_PANEL_CONFIGS } from "./config.js";
 import { patchFrequencyLimitWarnings } from "../features/frequency-limits.js";
@@ -165,6 +166,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
           ? refreshIncidentMonitoringData({ force: true })
           : false,
       ]);
+      if (shouldRefreshWeatherForecast()) void refreshWeatherForecast();
       if (shouldRefreshHouseLearningStatusSurface()) {
         void refreshHouseLearningStatus({ force: true });
       }
@@ -1022,10 +1024,12 @@ import { fetchWithTimeout } from "./browser-utils.js";
     const now = Date.now();
     const previousControlError = state.controlError;
     const timeWriteRevision = state.timeWriteRevision;
+    const weatherRevision = state.weatherConfigRevision;
+    const weatherWriteBusy = ["switch-weatherEnabled", "save-weatherLocation"].includes(state.busyAction);
     const learningRequestId = state.houseLearningRequestId;
     const learningSwitchBusy = state.busyAction === "switch-houseLearningEnabled";
     const canUpdateControlError = () => !learningSwitchBusy && learningRequestId === state.houseLearningRequestId
-      && state.controlError === previousControlError;
+      && !weatherWriteBusy && weatherRevision === state.weatherConfigRevision && state.controlError === previousControlError;
     const performancePromptWriteRevision = state.performanceTelemetryPromptWriteRevision;
     const forceMissing = options.forceMissing === true;
     const refreshKeys = keys.filter((key) =>
@@ -1090,6 +1094,9 @@ import { fetchWithTimeout } from "./browser-utils.js";
         if (key === "houseLearningEnabled"
             && (learningSwitchBusy || state.busyAction === "switch-houseLearningEnabled"
               || learningRequestId !== state.houseLearningRequestId)) return;
+        if (["weatherEnabled", "weatherLocation", "weatherStatus"].includes(key)
+            && (weatherWriteBusy || ["switch-weatherEnabled", "save-weatherLocation"].includes(state.busyAction)
+              || weatherRevision !== state.weatherConfigRevision)) return;
         // A poll started before/during a time write must not restore the old time.
         if (ENTITY_DEFS[key]?.domain === "time"
             && (state.savingTimeFields.has(key) || state.timeWriteRevision !== timeWriteRevision)) return;
@@ -1130,6 +1137,14 @@ import { fetchWithTimeout } from "./browser-utils.js";
       ...(previous || {}),
       ...(payload || {}),
     };
+    if (key === "weatherStatus") {
+      next.consent_state = typeof payload?.value === "string" ? payload.consent_state : null;
+      if (next.consent_state === "off") state.weatherOptOutUnconfirmed = false;
+      if (previous?.consent_state !== next.consent_state) invalidateWeatherForecast();
+    }
+    if (previous && (key === "weatherLocation" || key === "weatherEnabled")
+        && (next.value !== previous.value || next.save_request !== previous.save_request
+          || next.save_status !== previous.save_status)) invalidateWeatherForecast();
     if (key === "firmwareUpdate") {
       // Revision is live confirmation metadata, never a cached capability from older firmware.
       next.manifest_revision = payload?.manifest_revision;
@@ -1168,7 +1183,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
 
   const LEARNING_VIEW_KEYS = [
     "houseLearningEnabled", "houseLearningReset", "houseColdTemp", "houseOutdoorMax", "housePower",
-    "hp1WaterIn", "hp1WaterOut", "hp2WaterIn", "hp2WaterOut",
+    "hp1WaterIn", "hp1WaterOut", "hp2WaterIn", "hp2WaterOut", "weatherLocation", "weatherEnabled", "weatherStatus",
   ];
 
   export function getInitialPrimeKeys() {
@@ -1390,6 +1405,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       if (!shouldDeferSupplementary && shouldRefreshOduRuntimeFrequencySurface()) {
         await refreshOduRuntimeFrequencyStatuses();
       }
+      if (!shouldDeferSupplementary && shouldRefreshWeatherForecast()) void refreshWeatherForecast();
       if (!shouldDeferSupplementary && shouldRefreshHouseLearningStatusSurface()) {
         await refreshHouseLearningStatus();
       }
