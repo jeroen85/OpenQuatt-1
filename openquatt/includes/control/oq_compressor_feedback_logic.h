@@ -15,15 +15,17 @@ struct Snapshot {
   uint32_t confirmed_mask = 0;
   bool missing = false, settling = false, response_changed = false, qualified_run = false;
   uint8_t requested_hz = 0, actual_hz = 0;
-  bool blocks_dispatch(bool must_stop) const { return this->missing && !must_stop; }
   int hold_level(int level, bool policy_allowed, bool current_power_safe) const {
     return this->settling && level > 0 && policy_allowed && current_power_safe ? level : 0;
   }
   int frequency(unsigned level, int nominal) const {
+    // Missing receipts fall back per HP; they must not freeze the healthy peer.
+    if (missing) return nominal;
     if (level > 0 && requested_hz > 0 && nominal == requested_hz && actual_hz > 0) return actual_hz;
     return level > 0 && level < kLevels && hz[level] > 0 ? hz[level] : nominal;
   }
   int confirmed_frequency(unsigned level, int nominal) const {
+    if (missing) return nominal;
     const bool measured = level > 0 && level < kLevels && (confirmed_mask & (1U << level)) != 0;
     int confirmed = measured && hz[level] > 0 ? hz[level] : nominal;
     if (requested_hz > 0 && actual_hz > 0 && nominal <= requested_hz && confirmed > actual_hz + 2)

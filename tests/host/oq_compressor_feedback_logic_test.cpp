@@ -19,7 +19,7 @@ Snapshot confirm(Observer& observer, uint32_t start = 1000, int level = 2, float
 void test_live_feedback_and_nonmonotonic_response() {
   Observer observer;
   auto out = observer.observe(table(), 3, reading(1000));
-  assert(out.settling && out.frequency(2, 26) == 48);
+  assert(out.missing && out.settling && out.frequency(2, 26) == 26);
   // An unconfirmed transition must not become a learned low-frequency floor.
   assert(out.frequency(1, 20) == 20 && out.frequency(3, 30) == 30);
   out = confirm(observer);
@@ -109,7 +109,7 @@ void test_receipt_after_response_window() {
   in.received_ms = 170999;
   auto out = observer.observe(table(), 3, in);
   assert(out.missing && out.settling);
-  assert(out.blocks_dispatch(false) && !out.blocks_dispatch(true));
+  assert(out.frequency(3, 30) == 30 && out.confirmed_frequency(3, 30) == 30);
   in.now_ms = in.received_ms = 181000;
   out = observer.observe(table(), 3, in);
   assert(!out.missing && out.settling);
@@ -185,7 +185,7 @@ void test_startup_plateaus_never_qualify_an_override() {
           in.may_learn = now >= kStartupMs;
           out = observer.observe(table(), variant, in);
           assert(!out.qualified_run && !out.response_changed);
-          assert(out.frequency(2, 26) == plateau);
+          assert(out.frequency(2, 26) == (now == 1000 ? 26 : plateau));
           assert(out.confirmed_frequency(2, 26) == 26 && out.confirmed_frequency(1, 20) == 20);
         }
         for (uint32_t now = duration + 11000; now <= duration + kStartupMs + 51000; now += 10000)

@@ -5,6 +5,12 @@ RUNTIME = (ROOT / "openquatt/includes/control/oq_power_house_runtime.h").read_te
 DISPATCH_LOGIC = (ROOT / "openquatt/includes/control/oq_power_house_dispatch_logic.h").read_text()
 RUN_EXTENSION_LOGIC = (ROOT / "openquatt/includes/control/oq_power_house_run_extension_logic.h").read_text()
 class PowerHouseDemandContractTest(unittest.TestCase):
+    def test_missing_compressor_feedback_does_not_disable_dispatch_model(self):
+        gate = RUNTIME.split("dispatch_input.performance_valid =", 1)[1].split(";", 1)[0]
+        self.assertNotIn("feedback[", gate)
+        self.assertIn("!active_model_missing", gate)
+        self.assertIn("any_servable_candidate", gate)
+
     def test_watt_request_reaches_dispatch_without_normalized_control(self) -> None:
         core = (ROOT / "openquatt/includes/control/oq_power_house_demand_logic.h").read_text()
         for source in (core, RUNTIME, DISPATCH_LOGIC):

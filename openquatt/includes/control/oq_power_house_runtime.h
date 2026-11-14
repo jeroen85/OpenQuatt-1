@@ -339,9 +339,8 @@ class Runtime {
     const bool any_servable_candidate =
         (oq_hp_candidate::may_serve_candidate(hp1_candidate) && hp1_runnable_candidate) ||
         (duo && oq_hp_candidate::may_serve_candidate(hp2_candidate) && hp2_runnable_candidate);
-    dispatch_input.performance_valid = performance_valid && !feedback[0].blocks_dispatch(hp1_candidate.must_stop) &&
-                                       !feedback[1].blocks_dispatch(hp2_candidate.must_stop) && !active_model_missing &&
-                                       (model.coupled || any_servable_candidate);
+    dispatch_input.performance_valid =
+        performance_valid && !active_model_missing && (model.coupled || any_servable_candidate);
     dispatch_input.pair_context = &model;
     if (model.coupled) {
       dispatch_input.pair_power = &oq_water_performance::CandidateModel::dispatch;

@@ -93,15 +93,83 @@ void test_frequency_feedback_changes_duo_selection() {
   in = dispatch_input(actual);
   in.hp1.candidate.must_stop = true;
   in.hp2.candidate.previous_applied_level = 0;
-  oq_compressor_feedback::Snapshot unavailable;
-  unavailable.missing = true;
-  in.performance_valid = !unavailable.blocks_dispatch(in.hp1.candidate.must_stop);
   after = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
   assert(after.hp1_level == 0 && after.hp2_level > 0);
   in.requested_w = 0;
   in.hp1.feedback_hold_level = in.hp2.feedback_hold_level = 2;
   after = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
   assert(after.hp1_level == 0 && after.hp2_level == 0);
+}
+void test_missing_feedback_allows_peer_start() {
+  using namespace oq_water_performance;
+  using namespace oq_power_house_dispatch;
+  const Frequency frequency;
+  for (bool coupled : {false, true}) {
+    for (unsigned running_hp : {0U, 1U}) {
+      for (bool previous_run : {false, true}) {
+        for (unsigned fault = 0; fault < 6; ++fault) {
+          std::array<uint8_t, 21> nominal{};
+          for (int level = 1; level <= 2; ++level)
+            nominal[level] = frequency.automatic_frequency_hz(running_hp == 0, 2, level);
+          oq_compressor_feedback::Observer observer;
+          for (uint32_t now = 1000; previous_run && now <= 161000; now += 10000)
+            observer.observe(nominal, 3, {now, 2, 2, 48, 2, 35, true, false, true, now, 0});
+          oq_compressor_feedback::Observation observation{181000, 2, 2, 0, 2, 35, true, false, true, 181000, 0};
+          if (fault == 1) observation.working_mode = 0;  // Standby during startup.
+          if (fault == 2) observation.fresh = false;
+          if (fault == 3) observation.actual_hz = NAN;
+          if (fault == 4) observation.actual_hz = 91;
+          if (fault == 5) {  // A receipt from before a new command cannot renew cached capacity evidence.
+            observation.actual_hz = 48;
+            observation.applied_ms = 181000;
+            observation.received_ms = 180999;
+          }
+          std::array<oq_compressor_feedback::Snapshot, 2> feedback{};
+          feedback[running_hp] = observer.observe(nominal, 3, observation);
+          assert(feedback[running_hp].missing);
+          if (fault < 5) assert(!feedback[running_hp].qualified_run);
+          const CandidateModel model(frequency, 2, 30, 1000, {35, 35}, coupled, false, feedback);
+          assert(model.hz[running_hp][2] == 26 && model.confirmed_hz[running_hp][2] == 26);
+          DispatchInput in;
+          in.now_ms = 181000;
+          in.duo = in.performance_valid = true;
+          in.pair_context = &model;
+          in.pair_power = &CandidateModel::dispatch;
+          assert(model.pair(2, 2).valid());
+          in.requested_w = model.pair(2, 2).thermal_w;
+          assert(in.requested_w > std::max(model.unit(true, 2).thermal_w, model.unit(false, 2).thermal_w));
+          for (unsigned hp = 0; hp < 2; ++hp) {
+            auto& input = hp == 0 ? in.hp1 : in.hp2;
+            input.candidate = {hp == running_hp ? 2 : 0, true, false, false, true};
+            input.stop_inhibited = hp == running_hp;  // Preserve the starting unit's minimum run time.
+            input.feedback_hold_level = feedback[hp].hold_level(input.candidate.previous_applied_level, true, true);
+            input.levels[0] = {true, true, true, 0, 0};
+            for (int level = 1; level <= 2; ++level) {
+              const auto power = model.unit(hp == 0, level);
+              assert(power.valid());
+              input.levels[level] = {
+                  true, true, true, power.thermal_w, power.electrical_w, static_cast<uint8_t>(model.hz[hp][level])};
+            }
+          }
+          const DispatchTuning limits{6000, 6500};
+          const auto out = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
+          assert(out.output_valid && out.hp1_level > 0 && out.hp2_level > 0);
+          assert(std::isfinite(out.capacity_w) && std::isfinite(out.deficit_w));
+          in.requested_w = out.capacity_w + 1000;
+          const auto saturated = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
+          assert(saturated.saturated && saturated.deficit_w > 0);
+          auto& peer = running_hp == 0 ? in.hp2 : in.hp1;
+          peer.candidate.minimum_off_ready = false;
+          auto blocked = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
+          assert((running_hp == 0 ? blocked.hp2_level : blocked.hp1_level) == 0);
+          peer.candidate.minimum_off_ready = true;
+          peer.candidate.must_stop = true;
+          blocked = decide_dispatch(in, limits, {}, &CandidateModel::confirmed_power);
+          assert((running_hp == 0 ? blocked.hp2_level : blocked.hp1_level) == 0);
+        }
+      }
+    }
+  }
 }
 void test_feedback_closed_loop() {
   using namespace oq_water_performance;
@@ -164,8 +232,7 @@ void test_feedback_closed_loop() {
                 input.candidate.minimum_off_ready =
                     applied[hp] > 0 || stopped[hp] == 0 || static_cast<uint32_t>(now - stopped[hp]) >= 240000;
               }
-              in.performance_valid = !feedback[0].blocks_dispatch(in.hp1.candidate.must_stop) &&
-                                     !feedback[1].blocks_dispatch(in.hp2.candidate.must_stop);
+              in.performance_valid = true;
               in.pair_power = &CandidateModel::dispatch;
               in.pair_context = &model;
               const auto retained = model.pair(applied[0], applied[1]);
@@ -479,6 +546,7 @@ int main() {
   test_mixed_response_selects_duo_or_single_for_actual_capacity();
   test_inactive_outlet_is_not_required();
   test_frequency_feedback_changes_duo_selection();
+  test_missing_feedback_allows_peer_start();
   test_feedback_closed_loop();
   test_temporary_boost_cannot_shed_a_needed_peer();
   test_startup_oil_and_restart_closed_loop();
